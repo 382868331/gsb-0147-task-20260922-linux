@@ -324,11 +324,14 @@ class TWithFrame:
     """在环境链顶追加一帧：在外层链上求完全部 inits 后执行 body。
 
     labels 仅用于展示环境布局，每槽一个说明字符串。
+    schema_id 指向 Program.frame_schemas 中的结构化字段声明
+    （持久化/版本迁移用；旧代码构造的 IR 为 None，表示无具名字段）。
     """
 
     inits: tuple["TExpr", ...]
     body: "TExpr"
     labels: tuple[str, ...] = ()
+    schema_id: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -378,6 +381,19 @@ class TFunction:
 
 
 @dataclass(frozen=True)
+class FieldSpec:
+    """环境帧槽位的结构化字段声明（持久化与字段迁移用）。
+
+    与 ``TWithFrame.labels`` 一一对应：``field_name`` 是稳定字段名，
+    ``default`` 为该字段在“新增字段”迁移时使用的常量默认值（int），
+    None 表示该字段不是靠默认值新增的（初始版本字段或 cell 槽）。
+    """
+
+    field_name: str
+    default: int | None = None
+
+
+@dataclass(frozen=True)
 class Program:
     """转换输出。
 
@@ -386,12 +402,24 @@ class Program:
         main: 主表达式（在空环境链上求值）
         layout: 调试用环境布局：fid -> 每槽语义说明；主函数为 "<main>"
         n_nodes: 源 AST 节点数
+        frame_schemas: schema_id -> (FieldSpec, ...)，结构化帧字段声明；
+            仅 TWithFrame.schema_id 非 None 的帧使用
+        function_field_map: fid -> {version: schema_id}，函数各版本激活帧
+            （捕获槽+参数槽）的字段声明；仅在程序被字段化（持久化入口）后非空
+        code_version: 初始代码版本标识；convert 输出固定为 "v1"。
+            持久化镜像携带它，升级时校验栈帧引用的代码版本
+        field_defaults: 新增字段的常量默认值登记（field_key -> int），
+            field_key 为 "schema_id.field_name"
     """
 
     functions: dict[str, TFunction]
     main: TExpr
     layout: dict[str, list[str]]
     n_nodes: int
+    frame_schemas: dict[str, tuple[FieldSpec, ...]] = field(default_factory=dict)
+    function_field_map: dict[str, dict[str, str]] = field(default_factory=dict)
+    code_version: str = "v1"
+    field_defaults: dict[str, int] = field(default_factory=dict)
 
 
 def count_nodes(node: object) -> int:
