@@ -48,6 +48,7 @@ class _Converter:
         self.resolved = resolve(root)
         self.functions: dict[str, ast.TFunction] = {}
         self.layout: dict[str, list[str]] = {}
+        self.meta: dict[str, ast.FunctionMeta] = {}
         self._fid_counter = 0
 
     # -- 辅助 --------------------------------------------------------------
@@ -132,10 +133,19 @@ class _Converter:
         def _kind(b: Binding) -> str:
             return "cell" if (b.mutable or b.kind == "rec") else "val"
 
+        cap_kinds = tuple(_kind(self._binding(bid)) for bid in info.free)
+        # letrec 本组成员的 rec-cell 槽种类精确记为 "rec"（外层组的函数经
+        # 普通 cell 捕获，种类保持 "cell"）。
+        if info.group is not None:
+            own = set(info.group_bids)
+            cap_kinds = tuple(
+                "rec" if bid in own else k
+                for bid, k in zip(info.free, cap_kinds)
+            )
         labels = [
-            f"{_kind(self._binding(bid))}:"
+            f"{cap_kinds[i]}:"
             f"{self._binding(bid).name}#id{bid}"
-            for bid in info.free
+            for i, bid in enumerate(info.free)
         ]
 
         # 参数槽紧随其后；可变参数入 Cell
@@ -165,8 +175,15 @@ class _Converter:
             n_slots=len(labels),
             body=tbody,
             free_names=tuple(self._binding(bid).name for bid in info.free),
+            capture_kinds=cap_kinds,
+            ver_tag=info.ver_tag,
+            group=info.group,
+            member=info.member,
         )
         self.functions[fid] = fn
+        self.meta[fid] = ast.FunctionMeta(
+            ver_tag=info.ver_tag, group=info.group, member=info.member
+        )
         self.layout[fid] = labels
         return ast.TMkClosure(fid, env_inits)
 
@@ -207,6 +224,7 @@ class _Converter:
             main=tmain,
             layout=self.layout,
             n_nodes=ast.count_nodes(self.root),
+            meta=self.meta,
         )
 
 

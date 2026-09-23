@@ -5,6 +5,10 @@
     convert(ast) -> Program                 # 核心转换
     source_interp.evaluate(ast) -> (int, events)   # 独立源解释器
     target_interp.run_program(program) -> (int, events)  # 目标 IR 解释器
+    machine.Machine                        # 可暂停/恢复/热升级的显式栈机器
+    snapshot.dumps/loads                   # 暂停态跨进程序列化
+    migrate.MigrationRules                 # 显式字段迁移规则
+    codebundle.CodeBundle                  # 函数版本表
     ast_nodes: 源 AST 节点与目标 IR 数据结构
     errors: 错误类型
 
@@ -25,12 +29,18 @@ from .ast_nodes import (
     Set,
     Var,
 )
+from .codebundle import CodeBundle, build_bundle
 from .convert import MAIN_ID, convert
+from .machine import DEFAULT_FRAME_LIMIT, Machine
+from .migrate import FAILPOINTS, MigrationRules
+from . import snapshot
 from .source_interp import evaluate as eval_source
 from .target_interp import run_program as eval_target
 
 MAX_NODES = 500
 DEFAULT_STEP_LIMIT = 10_000
+# 显式栈机器的默认资源边界
+MAX_HEAP_OBJECTS = 100_000
 
 __all__ = [
     "ast_nodes",
@@ -38,9 +48,17 @@ __all__ = [
     "convert",
     "eval_source",
     "eval_target",
+    "Machine",
+    "snapshot",
+    "MigrationRules",
+    "FAILPOINTS",
+    "CodeBundle",
+    "build_bundle",
     "MAIN_ID",
     "MAX_NODES",
+    "MAX_HEAP_OBJECTS",
     "DEFAULT_STEP_LIMIT",
+    "DEFAULT_FRAME_LIMIT",
     "Program",
     "Int",
     "Var",

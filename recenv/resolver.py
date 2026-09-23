@@ -40,6 +40,10 @@ class LambdaInfo:
     free: tuple[int, ...]          # 排序后的自由绑定 ID
     param_bids: tuple[int, ...]    # 参数绑定 ID（按声明顺序）
     node: ast.Lambda
+    ver_tag: str | None = None    # 该 lambda 自己的版本标签
+    group: str | None = None      # letrec 组成员携带的组标签
+    member: str | None = None     # 该 lambda 在带版本组中的成员名
+    group_bids: tuple[int, ...] = ()  # 所属 letrec 组的成员绑定 ID（声明顺序）
 
 
 class _Resolver:
@@ -113,7 +117,10 @@ class _Resolver:
                 self.scopes.pop()
             free = tuple(sorted(body_refs - set(param_bids)))
             self.lambdas[id(node)] = LambdaInfo(
-                free=free, param_bids=tuple(param_bids), node=node
+                free=free,
+                param_bids=tuple(param_bids),
+                node=node,
+                ver_tag=node.ver,
             )
             # 对本 lambda 而言是自由变量，向外继续传播
             return set(free)
@@ -150,6 +157,17 @@ class _Resolver:
                 # 各 lambda 互相可见；遍历顺序不影响结果
                 for rb in node.bindings:
                     refs |= self.visit(rb.func)
+                    if node.ver is not None:
+                        info = self.lambdas[id(rb.func)]
+                        self.lambdas[id(rb.func)] = LambdaInfo(
+                            free=info.free,
+                            param_bids=info.param_bids,
+                            node=info.node,
+                            ver_tag=info.ver_tag,
+                            group=node.ver,
+                            member=rb.name,
+                            group_bids=tuple(rec_bids),
+                        )
                 refs |= self.visit(node.body)
             finally:
                 self.scopes.pop()

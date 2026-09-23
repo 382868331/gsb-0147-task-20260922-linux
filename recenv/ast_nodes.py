@@ -140,11 +140,31 @@ class Let(Node):
 class Lambda(Node):
     params: tuple[str, ...] = ()
     body: Expr = None  # type: ignore[assignment]
+    # 可选函数版本标签（如 "counter@1"）。仅在显式构造带版本程序时有意义；
+    # 旧式调用不传，行为与以前完全一致。关键字专用，不破坏位置参数构造。
+    ver: str | None = field(default=None, kw_only=True, compare=False)
 
     def __post_init__(self) -> None:
         ps = tuple(_check_param_list(self.params, self.loc))
         object.__setattr__(self, "params", ps)
         object.__setattr__(self, "body", _check_expr(self.body, "lambda body", self.loc))
+        object.__setattr__(self, "ver", _check_ver(self.ver, self.loc))
+
+
+def _check_ver(ver: object, loc: str | None) -> str | None:
+    prefix = f"{loc}: " if loc else ""
+    if ver is None:
+        return None
+    if not isinstance(ver, str):
+        raise ASTError(
+            f"{prefix}version tag must be a string, got {type(ver).__name__}"
+        )
+    if not ver or any(ch.isspace() for ch in ver):
+        raise ASTError(
+            f"{prefix}version tag must be a non-empty string without whitespace, "
+            f"got {ver!r}"
+        )
+    return ver
 
 
 @dataclass(frozen=True)
@@ -206,6 +226,9 @@ class RecBinding(Node):
 class LetRec(Node):
     bindings: tuple[RecBinding, ...] = ()
     body: Expr = None  # type: ignore[assignment]
+    # 互递归组作为一个版本化单元的标签（如 "evenodd@1"）。组内成员要么一起升级，
+    # 要么都不动。关键字专用；旧式构造不传则该组不参与版本管理。
+    ver: str | None = field(default=None, kw_only=True, compare=False)
 
     def __post_init__(self) -> None:
         prefix = f"{self.loc}: " if self.loc else ""
@@ -225,9 +248,15 @@ class LetRec(Node):
                     f"{prefix}duplicate letrec binding in the same group: {b.name!r}"
                 )
             seen.add(b.name)
+            if self.ver is not None and b.func.ver is not None:
+                raise ASTError(
+                    f"{prefix}letrec group is versioned ({self.ver!r}); member "
+                    f"lambdas must not carry their own version tags"
+                )
             bs.append(b)
         object.__setattr__(self, "bindings", tuple(bs))
         object.__setattr__(self, "body", _check_expr(self.body, "letrec body", self.loc))
+        object.__setattr__(self, "ver", _check_ver(self.ver, self.loc))
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +395,9 @@ class TFunction:
         n_slots: 激活帧总槽数（n_capture + 可变参数 cell 数）
         body: 函数体
         free_names: 与捕获槽一一对应的绑定名（按绑定 ID 排序），仅调试用
+        capture_kinds: 与捕获槽一一对应的槽种类："val" / "cell" / "rec"
+        ver_tag: 该函数所属版本化单元的原始标签（"名@版本"），无标签为 None
+        group: 非 None 时该函数是某个带标签 letrec 组的成员（组标签）
     """
 
     fid: str
@@ -375,6 +407,19 @@ class TFunction:
     n_slots: int
     body: TExpr
     free_names: tuple[str, ...]
+    capture_kinds: tuple[str, ...] = ()
+    ver_tag: str | None = field(default=None, kw_only=True, compare=False)
+    group: str | None = field(default=None, kw_only=True, compare=False)
+    member: str | None = field(default=None, kw_only=True, compare=False)
+
+
+@dataclass(frozen=True)
+class FunctionMeta:
+    """转换器记录的函数来源元数据（供版本表构建使用）。"""
+
+    ver_tag: str | None
+    group: str | None  # letrec 组成员的组标签，否则 None
+    member: str | None = None  # 带版本组的成员名，否则 None
 
 
 @dataclass(frozen=True)
@@ -392,6 +437,8 @@ class Program:
     main: TExpr
     layout: dict[str, list[str]]
     n_nodes: int
+    # fid -> 函数来源元数据（版本标签/所属组）；旧式转换同样填充（值多为 None）
+    meta: dict[str, FunctionMeta] = field(default_factory=dict)
 
 
 def count_nodes(node: object) -> int:
