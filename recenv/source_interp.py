@@ -8,7 +8,8 @@
 副作用序列：语言唯一的可观察副作用是 ``set`` 赋值，记录为
 ``("set", 名字, 写入的整数)``，按发生顺序排列。
 
-严格从左到右：call 先求函数再依次求实参；add 先左后右；let 先求值再入作用域。
+严格从左到右：call/partial 先求函数再依次求实参；add 先左后右；
+let 先求值再入作用域。partial 的前缀参数只在 partial 发生时求值一次。
 """
 
 from __future__ import annotations
@@ -39,6 +40,12 @@ class SrcClosure:
     params: tuple[str, ...]
     body: ast.Expr
     env: "Scope"
+
+
+@dataclass
+class PartialClosure:
+    function: SrcClosure
+    prefix: tuple[object, ...]
 
 
 class Scope:
@@ -115,11 +122,16 @@ class _SrcInterp:
             inner.declare(node.name, Box(v))
             return self.eval(node.body, inner)
         if isinstance(node, ast.Lambda):
-            return SrcClosure(tuple(node.params), node.body, env if env is not None else Scope(None))
+            closure_env = env if env is not None else Scope(None)
+            return SrcClosure(tuple(node.params), node.body, closure_env)
         if isinstance(node, ast.Call):
             callee = self.eval(node.func, env)
             args = [self.eval(a, env) for a in node.args]
             return self.apply(callee, args, node.loc)
+        if isinstance(node, ast.Partial):
+            callee = self.eval(node.func, env)
+            args = [self.eval(a, env) for a in node.args]
+            return self.partial_apply(callee, args, node.loc)
         if isinstance(node, ast.If0):
             c = self._as_int(self.eval(node.cond, env), node.loc)
             return self.eval(node.then_e if c == 0 else node.else_e, env)
@@ -157,6 +169,15 @@ class _SrcInterp:
 
     def apply(self, callee: object, args: list[object], loc: str | None) -> object:
         prefix = f"{loc}: " if loc else ""
+        if isinstance(callee, PartialClosure):
+            remaining = len(callee.function.params) - len(callee.prefix)
+            if len(args) != remaining:
+                raise LangRuntimeError(
+                    f"{prefix}function expects {remaining} args, got {len(args)}"
+                )
+            bound = list(callee.prefix)
+            callee = callee.function
+            args = [*bound, *args]
         if not isinstance(callee, SrcClosure):
             raise LangRuntimeError(f"{prefix}attempt to call non-function value")
         if len(args) != len(callee.params):
@@ -165,8 +186,36 @@ class _SrcInterp:
             )
         call_scope = Scope(callee.env)
         for name, a in zip(callee.params, args):
-            call_scope.declare(name, Box(self._as_int_or_fn(a, loc)))
+            call_scope.declare(name, Box(self._as_value(a, loc)))
         return self.eval(callee.body, call_scope)
+
+    def partial_apply(
+        self, callee: object, args: list[object], loc: str | None
+    ) -> object:
+        prefix = f"{loc}: " if loc else ""
+        if isinstance(callee, (SrcClosure, PartialClosure)) and not args:
+            return callee
+        bound: list[object] = []
+        while isinstance(callee, PartialClosure):
+            bound[0:0] = list(callee.prefix)
+            callee = callee.function
+        if not isinstance(callee, SrcClosure):
+            raise LangRuntimeError(
+                f"{prefix}attempt to partial-apply non-function value"
+            )
+        arity = len(callee.params)
+        total = len(bound) + len(args)
+        if total < arity:
+            return PartialClosure(callee, tuple(bound + args))
+
+        split_at = arity - len(bound)
+        complete = [*bound, *args[:split_at]]
+        result = self.apply(callee, complete, loc)
+        extra = args[split_at:]
+        if extra:
+            self.tick()
+            return self.partial_apply(result, extra, loc)
+        return result
 
     @staticmethod
     def _as_int(v: object, loc: str | None) -> int:
@@ -178,8 +227,10 @@ class _SrcInterp:
         return v
 
     @staticmethod
-    def _as_int_or_fn(v: object, loc: str | None) -> object:
-        if isinstance(v, (int, SrcClosure)) and not isinstance(v, bool):
+    def _as_value(v: object, loc: str | None) -> object:
+        if isinstance(
+            v, (int, SrcClosure, PartialClosure)
+        ) and not isinstance(v, bool):
             return v
         prefix = f"{loc}: " if loc else ""
         raise LangRuntimeError(f"{prefix}bad argument value: {type(v).__name__}")

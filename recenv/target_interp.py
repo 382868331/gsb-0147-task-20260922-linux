@@ -1,7 +1,8 @@
 """目标 IR 解释器：在显式环境布局（帧链 + 槽位 + Cell）上执行转换输出。
 
-值只有整数、:class:`Closure`、:class:`Cell`。副作用事件与源解释器使用
-完全相同的 ``("set", 名字, 整数)`` 记录格式，便于逐事件对照。
+值只有整数、:class:`Closure`（可携带 partial 前缀）、:class:`Cell`。
+副作用事件与源解释器使用完全相同的 ``("set", 名字, 整数)`` 记录格式，
+便于逐事件对照。
 
 本解释器只依赖 :mod:`recenv.ast_nodes` 中的 IR 定义，不调用转换器。
 """
@@ -32,6 +33,7 @@ class Cell:
 class Closure:
     fid: str
     record: tuple  # 捕获记录（tuple，槽内为 int / Closure / Cell）
+    prefix: tuple = ()
 
 
 def run_program(
@@ -92,6 +94,7 @@ class _TargetInterp:
                 ast.TPrim,
                 ast.TMkClosure,
                 ast.TCall,
+                ast.TPartial,
                 ast.TIf0,
                 ast.TWithFrame,
             ),
@@ -156,6 +159,10 @@ class _TargetInterp:
             callee = self.eval(e.func, chain)
             args = [self.eval(a, chain) for a in e.args]
             return self.apply(callee, args)
+        if isinstance(e, ast.TPartial):
+            callee = self.eval(e.func, chain)
+            args = [self.eval(a, chain) for a in e.args]
+            return self.partial_apply(callee, args)
         if isinstance(e, ast.TIf0):
             c = self._as_int(self.eval(e.cond, chain))
             return self.eval(e.then_e if c == 0 else e.else_e, chain)
@@ -174,6 +181,14 @@ class _TargetInterp:
         if not isinstance(callee, Closure):
             raise LangRuntimeError("attempt to call non-function value")
         fn = self.program.functions[callee.fid]
+        bound = list(callee.prefix)
+        if bound:
+            remaining = len(fn.params) - len(bound)
+            if len(args) != remaining:
+                raise LangRuntimeError(
+                    f"function {fn.fid} expects {remaining} args, got {len(args)}"
+                )
+            args = bound + args
         if len(args) != len(fn.params):
             raise LangRuntimeError(
                 f"function {fn.fid} expects {len(fn.params)} args, got {len(args)}"
@@ -191,6 +206,26 @@ class _TargetInterp:
                 f"expected {fn.n_slots}"
             )
         return self.eval(fn.body, (act_record,))
+
+    def partial_apply(self, callee: object, args: list[object]) -> object:
+        if not isinstance(callee, Closure):
+            raise LangRuntimeError("attempt to partial-apply non-function value")
+        if not args:
+            return callee
+        fn = self.program.functions[callee.fid]
+        bound = list(callee.prefix)
+        arity = len(fn.params)
+        total = len(bound) + len(args)
+        if total < arity:
+            return Closure(callee.fid, callee.record, tuple(bound + args))
+
+        split_at = arity - len(bound)
+        result = self.apply(callee, args[:split_at])
+        extra = args[split_at:]
+        if extra:
+            self.tick()
+            return self.partial_apply(result, extra)
+        return result
 
     def _as_int(self, v: object) -> int:
         if isinstance(v, bool) or not isinstance(v, int):

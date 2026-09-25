@@ -122,6 +122,11 @@ class _Resolver:
             for a in node.args:
                 refs |= self.visit(a)
             return refs
+        if isinstance(node, ast.Partial):
+            refs = self.visit(node.func)
+            for a in node.args:
+                refs |= self.visit(a)
+            return refs
         if isinstance(node, ast.If0):
             return (
                 self.visit(node.cond)

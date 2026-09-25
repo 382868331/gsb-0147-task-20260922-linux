@@ -20,6 +20,7 @@ from .ast_nodes import (
     Lambda,
     Let,
     LetRec,
+    Partial,
     Program,
     RecBinding,
     Set,
@@ -52,4 +53,5 @@ __all__ = [
     "Set",
     "RecBinding",
     "LetRec",
+    "Partial",
 ]

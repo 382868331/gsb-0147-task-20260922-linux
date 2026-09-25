@@ -8,6 +8,7 @@
           | Let(name, value, body)              # 单态不可变绑定（被 set 时自动升级）
           | Lambda(params, body)                # 函数，params 为字符串列表
           | Call(func, args)                    # 调用，严格从左到右求值
+          | Partial(func, args)                 # 前缀应用；不足返回闭包，过量继续应用
           | If0(cond, then_e, else_e)           # cond == 0 走 then
           | Set(name, value)                    # 对词法上最近的同名绑定赋值
           | LetRec(bindings, body)              # 同时绑定的递归函数组
@@ -33,7 +34,16 @@ MAX_NODES = 500
 
 # AST 联合类型
 Expr = Union[
-    "Int", "Var", "Add", "Let", "Lambda", "Call", "If0", "Set", "LetRec"
+    "Int",
+    "Var",
+    "Add",
+    "Let",
+    "Lambda",
+    "Call",
+    "Partial",
+    "If0",
+    "Set",
+    "LetRec",
 ]
 
 
@@ -158,6 +168,24 @@ class Call(Node):
         if not isinstance(self.args, (list, tuple)):
             raise ASTError(f"{prefix}call args must be a list/tuple")
         checked = tuple(_check_expr(a, "call argument", self.loc) for a in self.args)
+        object.__setattr__(self, "args", checked)
+
+
+@dataclass(frozen=True)
+class Partial(Node):
+    """先应用函数前缀参数；参数不足时返回普通闭包，参数过量时继续应用返回值。"""
+
+    func: Expr = None  # type: ignore[assignment]
+    args: tuple[Expr, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "func", _check_expr(self.func, "partial function", self.loc)
+        )
+        prefix = f"{self.loc}: " if self.loc else ""
+        if not isinstance(self.args, (list, tuple)):
+            raise ASTError(f"{prefix}partial args must be a list/tuple")
+        checked = tuple(_check_expr(a, "partial argument", self.loc) for a in self.args)
         object.__setattr__(self, "args", checked)
 
 
@@ -313,6 +341,14 @@ class TCall:
 
 
 @dataclass(frozen=True)
+class TPartial:
+    """前缀应用；闭包前缀在运行时保存，参数收齐后再进入函数体。"""
+
+    func: "TExpr"
+    args: tuple["TExpr", ...]
+
+
+@dataclass(frozen=True)
 class TIf0:
     cond: "TExpr"
     then_e: "TExpr"
@@ -348,6 +384,7 @@ TExpr = Union[
     TMkCell,
     TFillCell,
     TCall,
+    TPartial,
     TIf0,
     TWithFrame,
     TBegin,
@@ -363,7 +400,7 @@ class TFunction:
         params: 参数名（声明顺序）
         mutable_params: 哪些位置的参数被 set，进入时包装成 Cell
         n_capture: 闭包环境记录长度（排序后的自由变量数）
-        n_slots: 激活帧总槽数（n_capture + 可变参数 cell 数）
+        n_slots: 激活帧总槽数（n_capture + 参数数）
         body: 函数体
         free_names: 与捕获槽一一对应的绑定名（按绑定 ID 排序），仅调试用
     """
@@ -407,6 +444,8 @@ def count_nodes(node: object) -> int:
     if isinstance(node, Lambda):
         return 1 + count_nodes(node.body)
     if isinstance(node, Call):
+        return 1 + count_nodes(node.func) + sum(count_nodes(a) for a in node.args)
+    if isinstance(node, Partial):
         return 1 + count_nodes(node.func) + sum(count_nodes(a) for a in node.args)
     if isinstance(node, If0):
         return 1 + count_nodes(node.cond) + count_nodes(node.then_e) + count_nodes(node.else_e)

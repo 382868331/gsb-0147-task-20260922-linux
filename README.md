@@ -14,11 +14,22 @@
 # 必要测试（在仓库根目录）
 python -m unittest discover -s tests -v
 
-# 固定输入演示（约 0.1 秒，上限 8 秒；真实计算，无 sleep、无预录结果）
-python demo.py
+# 本次迭代演示（约 0.1 秒，上限 90 秒；真实计算，无 sleep、无预录结果）
+python demo_iteration.py
 ```
 
 两条命令均完全离线。
+
+如需使用虚拟环境（可选）：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt   # 无第三方依赖；文件仅含说明注释
+python -m unittest discover -s tests -v
+python demo_iteration.py
+```
 
 ## 包结构
 
@@ -36,14 +47,17 @@ tests/
   test_semantics.py      手工语义用例（闭包共享/互递归/遮蔽/未绑定等）
   test_differential.py   源 vs 目标 差分测试（期望值来自独立源解释器）
   test_limits.py         500 节点、10000 步、失败不留部分状态
-demo.py                  固定输入演示
+  test_partial.py        partial 前缀绑定、过量续应用、零参与严格顺序
+demo.py                  既有固定输入演示（保留旧入口）
+demo_iteration.py        本次 partial 迭代演示
 ```
 
 ## 公开接口
 
 ```python
 from recenv import (
-    Int, Var, Add, Let, Lambda, Call, If0, Set, RecBinding, LetRec,  # 源 AST
+    Int, Var, Add, Let, Lambda, Call, Partial, If0, Set,
+    RecBinding, LetRec,  # 源 AST
     convert,          # convert(Expr) -> Program
     eval_source,      # (Expr, step_limit=10000) -> (int, events)
     eval_target,      # (Program, step_limit=10000) -> (int, events)
@@ -56,9 +70,21 @@ from recenv import (
 
 ### 源语言
 
-整数、`Add`、变量、`Let`、`Lambda`、`Call`、`If0`、`Set`、同时绑定的
-`LetRec` 函数组。求值顺序严格从左到右：`Call` 先求函数再依次求实参，
-`Add` 先左后右，`Let` 先求值再入作用域，`If0` 只求被选中的分支。
+整数、`Add`、变量、`Let`、`Lambda`、`Call`、`Partial`、`If0`、`Set`、
+同时绑定的 `LetRec` 函数组。求值顺序严格从左到右：`Call` / `Partial`
+先求函数再依次求实参，`Add` 先左后右，`Let` 先求值再入作用域，`If0`
+只求被选中的分支。
+
+`Partial(func, args)` 是独立的前缀应用节点，不改变旧 `Call`：
+
+- `args` 中的值在 partial 发生时立即、依次、只求值一次；
+- 已绑定参数少于形参时返回普通闭包，之后可用普通 `Call` 补齐剩余参数；
+- 参数刚好收齐时立即进入函数体；但零参 partial 总是先返回一个等价闭包，
+  即使目标函数本身是零参函数，也不提前执行函数体；
+- 本次提供的参数超过剩余形参时，先收齐并进入函数体，再把多出的实参
+  按从左到右应用到返回值；若返回值不是函数则触发运行期错误；
+- 旧 `Call` 仍保持精确元数，不会被自动改成柯里化；调用 partial 闭包时
+  必须恰好提供“剩余参数个数”。
 
 程序结果必须是整数；函数是一等值但不能与整数混用。
 
@@ -67,6 +93,8 @@ from recenv import (
 - `functions: dict[fid, TFunction]`：函数体**无自由变量**，外部引用全部
   变成对环境槽 `(depth, slot)` 的显式访问；
 - `main: TExpr`：主表达式，在空环境链上求值；
+- partial 在 IR 中表示为 `TPartial(func, args)`；运行时闭包额外携带
+  `prefix` 已绑定值。闭包捕获记录本身不复制，仍共享同一环境槽与递归组帧；
 - `layout: dict[fid, list[str]]`：每个函数激活帧逐槽的语义说明
   （`val:` / `cell:` / `cell-rec:`，含名字与绑定 ID），用于展示环境布局；
 - `n_nodes`：源 AST 节点数。
@@ -77,8 +105,9 @@ from recenv import (
    letrec 组内连续分配。自由变量**按绑定 ID 排序**入捕获槽，因此同名
    遮蔽的两个绑定（ID 不同）绝不会按名字字符串混淆。
 2. **帧链**：运行期环境是记录链；函数激活时建立一帧，槽位依次为
-   “按 ID 排序的捕获槽” + “按声明顺序的参数槽”。激活帧把自由变量
-   扁平化到 depth 0，故函数体内不存在自由变量。
+   “按 ID 排序的捕获槽” + “按声明顺序的参数槽”。partial 只把已求值的
+   参数值保存在闭包 `prefix` 中，不复制捕获记录；真正进入函数体时才追加
+   参数槽。激活帧把自由变量扁平化到 depth 0，故函数体内不存在自由变量。
 3. **共享 cell**：被 `set` 的 `let` 绑定与被 `set` 的参数在槽内放
    `Cell`；闭包抽取环境时 Cell 原样传递，多个闭包因此共享同一个可变
    单元。未被 `set` 的绑定放原值（`val:`），不引入间接。
@@ -98,7 +127,12 @@ from recenv import (
 | 整数字面量 | 必须 `int`；`bool` 拒绝；float 仅接受有限整值，拒绝 NaN/Infinity | `ASTError` |
 | 名字 | 非空字符串；lambda 参数/letrec 组内不得重名 | `ASTError` |
 | 未绑定变量 / 对 letrec 名 set | 静态拒绝 | `UnboundVariableError` / `ScopeError` |
-| 调用非函数、元数不符、非整数参与加法 | 运行期拒绝 | `LangRuntimeError` |
+| 调用/partial 非函数、旧 Call 元数不符、过量应用到非函数、非整数参与加法 | 运行期拒绝 | `LangRuntimeError` |
+
+旧 `Call` 的元数错误保持为“声明形参数 vs 本次实参数”；对 partial 返回的
+闭包使用旧 `Call` 时，错误中的期望数量是剩余参数个数。`Partial` 不因为
+参数少而报错，只有参数过量且返回值不能继续应用、或函数位置不是函数时才
+报错。
 
 - 所有可定位错误消息以 `"<loc>: "` 开头，`loc` 来自节点构造参数
   （如 `Var("x", loc="行3:列8")`）。
@@ -126,6 +160,9 @@ from recenv import (
 - **差分测试**：`tests/proggen.py` 用固定种子生成 180+ 个程序
   （含产生 `set` 副作用、二/三函数互递归组、捕获外层可变 cell 的
   递归函数），全部双解释器对拍。
+- `tests/test_partial.py` 对 partial 的返回值、副作用事件和精确步数做
+  源/目标逐项对照，覆盖带计数副作用实参、闭包复用、互递归和返回非函数时
+  的过量应用检查顺序。
 - 闭包共享计数通过运行时 hook 直接断言两个闭包捕获记录中的 `Cell`
   是同一对象；互递归断言组帧中两个 rec-cell 的对象身份；同名遮蔽断言
   内层/外层绑定的布局 ID 不同。
@@ -134,7 +171,8 @@ from recenv import (
 ## 设计取舍与已知限制
 
 - 只实现题目契约内的语言子集：整数 + 加法 + 闭包 + if0 + set +
-  同时绑定 letrec。**不**宣称与任何行业标准语言/字节码/ABI 兼容；
+  同时绑定 letrec + 前缀 partial。**不**宣称与任何行业标准语言/
+  字节码/ABI 兼容；
   没有乘法、字符串、数据结构、异常值、I/O 原语。
 - 解释器为直接的递归下降求值器（非寄存器机/栈机），`sys.setrecursionlimit`
   已留出余量以保证 10000 步预算先于 Python 递归深度报错；这不是

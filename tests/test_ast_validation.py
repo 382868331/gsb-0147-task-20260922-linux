@@ -65,6 +65,17 @@ class TestShapeValidation(unittest.TestCase):
         with self.assertRaises(errors.ASTError):
             ast.Call(ast.Lambda([], ast.Int(0)), ast.Int(1))  # type: ignore[arg-type]
 
+    def test_partial_shape(self):
+        node = ast.Partial(
+            ast.Lambda(["a"], ast.Var("a")),
+            [ast.Int(1)],
+        )
+        self.assertEqual(ast.count_nodes(node), 4)
+        with self.assertRaises(errors.ASTError):
+            ast.Partial(1, [])  # type: ignore[arg-type]
+        with self.assertRaises(errors.ASTError):
+            ast.Partial(ast.Lambda([], ast.Int(0)), ast.Int(1))  # type: ignore[arg-type]
+
     def test_letrec_empty(self):
         with self.assertRaises(errors.ASTError):
             ast.LetRec([], ast.Int(0))
