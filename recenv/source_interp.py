@@ -41,6 +41,17 @@ class SrcClosure:
     env: "Scope"
 
 
+def type_name(v: object) -> str:
+    """语言层面的类型名（错误消息用，不暴露解释器内部类名）。"""
+    if isinstance(v, bool):
+        return "boolean"
+    if isinstance(v, int):
+        return "integer"
+    if isinstance(v, SrcClosure):
+        return "function"
+    return type(v).__name__
+
+
 class Scope:
     __slots__ = ("names", "parent")
 
@@ -173,7 +184,7 @@ class _SrcInterp:
         prefix = f"{loc}: " if loc else ""
         if isinstance(v, bool) or not isinstance(v, int):
             raise LangRuntimeError(
-                f"{prefix}integer expected, got {type(v).__name__}"
+                f"{prefix}integer expected, got {type_name(v)}"
             )
         return v
 
@@ -182,4 +193,4 @@ class _SrcInterp:
         if isinstance(v, (int, SrcClosure)) and not isinstance(v, bool):
             return v
         prefix = f"{loc}: " if loc else ""
-        raise LangRuntimeError(f"{prefix}bad argument value: {type(v).__name__}")
+        raise LangRuntimeError(f"{prefix}bad argument value: {type_name(v)}")

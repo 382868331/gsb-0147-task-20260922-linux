@@ -265,20 +265,26 @@ class TCellGet:
 
 @dataclass(frozen=True)
 class TCellSet:
-    """写槽中 Cell；求值为写入的值。"""
+    """写槽中 Cell；求值为写入的值。loc 为源 Set 节点的位置标签。"""
 
     depth: int
     slot: int
     value: "TExpr"
     name: str
+    loc: str | None = field(default=None, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True)
 class TPrim:
-    """原语算术，目前只有 "add"，参数严格按序求值。"""
+    """原语算术，目前只有 "add"，参数严格按序求值。
+
+    loc 为源 Add 节点的位置标签，运行期操作数类型错误据此定位
+    （与源解释器的异常位置一致）。
+    """
 
     op: str
     args: tuple["TExpr", ...]
+    loc: str | None = field(default=None, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -308,8 +314,28 @@ class TFillCell:
 
 @dataclass(frozen=True)
 class TCall:
+    """非尾位置调用：调用方帧必须保留，实参从左到右求值。
+
+    loc 为源 Call 节点的位置标签（调用非函数/元数不符时据此定位）。
+    """
+
     func: "TExpr"
     args: tuple["TExpr", ...]
+    loc: str | None = field(default=None, compare=False, kw_only=True)
+
+
+@dataclass(frozen=True)
+class TTailCall:
+    """尾位置调用：函数与全部实参在*当前帧*中严格从左到右求值完成后，
+    调用帧被目标函数的激活帧替换（不压栈）。
+
+    实参求值期间当前帧仍然存活；任一实参出错都不会替换帧。
+    loc 为源 Call 节点的位置标签。
+    """
+
+    func: "TExpr"
+    args: tuple["TExpr", ...]
+    loc: str | None = field(default=None, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -317,6 +343,7 @@ class TIf0:
     cond: "TExpr"
     then_e: "TExpr"
     else_e: "TExpr"
+    loc: str | None = field(default=None, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -348,6 +375,7 @@ TExpr = Union[
     TMkCell,
     TFillCell,
     TCall,
+    TTailCall,
     TIf0,
     TWithFrame,
     TBegin,
