@@ -271,6 +271,7 @@ class TCellSet:
     slot: int
     value: "TExpr"
     name: str
+    loc: str | None = field(default=None, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -279,6 +280,7 @@ class TPrim:
 
     op: str
     args: tuple["TExpr", ...]
+    loc: str | None = field(default=None, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -308,8 +310,34 @@ class TFillCell:
 
 @dataclass(frozen=True)
 class TCall:
+    """非尾位置调用：建立*新*调用帧，返回点在调用者帧上。
+
+    函数位置与参数都不是尾位置，严格先求函数、再从左到右求实参；
+    任一参数求值出错时新帧不得提前建立。
+    """
+
     func: "TExpr"
     args: tuple["TExpr", ...]
+    loc: str | None = field(default=None, compare=False, kw_only=True)
+
+
+@dataclass(frozen=True)
+class TTailCall:
+    """真尾位置调用：func 与参数全部求值成功后*替换*当前调用帧并跳转。
+
+    只由转换器在真正的尾位置生成（函数体结果位置、if0 结果分支、
+    let/letrec 的 body）。加法操作数、set 右侧、let 绑定值、call 的
+    函数与参数位置都不会产生 TTailCall。
+
+    运行期语义：函数与参数在当前帧环境链上按 TCall 同样的顺序求值；
+    仅在 callee/元数校验通过、激活记录构造完成后，才丢弃当前帧的
+    剩余上下文并把栈顶调用帧替换成新帧——活动调用帧数不增加。
+    参数求值或校验失败时不替换帧，异常直接传播。
+    """
+
+    func: "TExpr"
+    args: tuple["TExpr", ...]
+    loc: str | None = field(default=None, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -317,6 +345,7 @@ class TIf0:
     cond: "TExpr"
     then_e: "TExpr"
     else_e: "TExpr"
+    loc: str | None = field(default=None, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -348,6 +377,7 @@ TExpr = Union[
     TMkCell,
     TFillCell,
     TCall,
+    TTailCall,
     TIf0,
     TWithFrame,
     TBegin,
