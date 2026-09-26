@@ -91,6 +91,11 @@ class _Converter:
                 self.conv(node.func, frame),
                 tuple(self.conv(a, frame) for a in node.args),
             )
+        if isinstance(node, ast.Partial):
+            return ast.TMkPartial(
+                self.conv(node.func, frame),
+                tuple(self.conv(a, frame) for a in node.args),
+            )
         if isinstance(node, ast.If0):
             return ast.TIf0(
                 self.conv(node.cond, frame),

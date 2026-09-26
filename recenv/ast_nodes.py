@@ -8,6 +8,7 @@
           | Let(name, value, body)              # 单态不可变绑定（被 set 时自动升级）
           | Lambda(params, body)                # 函数，params 为字符串列表
           | Call(func, args)                    # 调用，严格从左到右求值
+          | Partial(func, args)                 # 部分应用：先绑定前几个参数
           | If0(cond, then_e, else_e)           # cond == 0 走 then
           | Set(name, value)                    # 对词法上最近的同名绑定赋值
           | LetRec(bindings, body)              # 同时绑定的递归函数组
@@ -19,6 +20,10 @@
 * 名字必须是非空字符串；lambda 参数不得重名；letrec 组内不得重名。
 * 对 letrec 绑定名使用 ``set`` 是静态错误（函数槽不可重新赋值；
   函数内部的可变状态应通过外层 let 建立）。
+``Partial(func, args)`` 在 partial 发生时把 func 与 args 严格从左到右
+各求值一次，绑定前 ``len(args)`` 个参数并返回一个普通闭包；参数全部
+到齐才进入函数体，多出的参数再从左到右应用到函数体返回的函数上。
+零参数 partial 返回等价闭包，不提前执行函数体。
 """
 
 from __future__ import annotations
@@ -33,7 +38,8 @@ MAX_NODES = 500
 
 # AST 联合类型
 Expr = Union[
-    "Int", "Var", "Add", "Let", "Lambda", "Call", "If0", "Set", "LetRec"
+    "Int", "Var", "Add", "Let", "Lambda", "Call", "Partial", "If0", "Set",
+    "LetRec",
 ]
 
 
@@ -158,6 +164,29 @@ class Call(Node):
         if not isinstance(self.args, (list, tuple)):
             raise ASTError(f"{prefix}call args must be a list/tuple")
         checked = tuple(_check_expr(a, "call argument", self.loc) for a in self.args)
+        object.__setattr__(self, "args", checked)
+
+
+@dataclass(frozen=True)
+class If0(Node):
+@dataclass(frozen=True)
+class Partial(Node):
+    """部分应用：绑定 func 的前 len(args) 个参数，返回普通闭包。
+
+    func 与 args 在 partial 发生时严格从左到右各求值一次；
+    args 为空时返回等价闭包，不提前执行函数体。
+    绑定数量超过函数参数个数是运行期错误（不隐式柯里化旧调用）。
+    """
+
+    func: Expr = None  # type: ignore[assignment]
+    args: tuple[Expr, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "func", _check_expr(self.func, "partial function", self.loc))
+        prefix = f"{self.loc}: " if self.loc else ""
+        if not isinstance(self.args, (list, tuple)):
+            raise ASTError(f"{prefix}partial args must be a list/tuple")
+        checked = tuple(_check_expr(a, "partial argument", self.loc) for a in self.args)
         object.__setattr__(self, "args", checked)
 
 
@@ -313,6 +342,18 @@ class TCall:
 
 
 @dataclass(frozen=True)
+class TMkPartial:
+    """构造部分应用闭包：func 与 args 严格从左到右各求值一次。
+
+    运行期值为 PartialClosure（普通闭包值的一种），绑定槽在构造时
+    固定，之后不再重复求值。
+    """
+
+    func: "TExpr"
+    args: tuple["TExpr", ...]
+
+
+@dataclass(frozen=True)
 class TIf0:
     cond: "TExpr"
     then_e: "TExpr"
@@ -348,6 +389,7 @@ TExpr = Union[
     TMkCell,
     TFillCell,
     TCall,
+    TMkPartial,
     TIf0,
     TWithFrame,
     TBegin,
@@ -407,6 +449,8 @@ def count_nodes(node: object) -> int:
     if isinstance(node, Lambda):
         return 1 + count_nodes(node.body)
     if isinstance(node, Call):
+        return 1 + count_nodes(node.func) + sum(count_nodes(a) for a in node.args)
+    if isinstance(node, Partial):
         return 1 + count_nodes(node.func) + sum(count_nodes(a) for a in node.args)
     if isinstance(node, If0):
         return 1 + count_nodes(node.cond) + count_nodes(node.then_e) + count_nodes(node.else_e)

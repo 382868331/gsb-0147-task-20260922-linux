@@ -41,6 +41,14 @@ class SrcClosure:
     env: "Scope"
 
 
+@dataclass
+class SrcPartialClosure:
+    """Partial 产生的普通闭包值：内层闭包 + 已绑定参数（构造时只求值一次）。"""
+
+    inner: object  # SrcClosure 或 SrcPartialClosure
+    bound: tuple  # 已绑定的参数值（按从左到右顺序）
+
+
 class Scope:
     __slots__ = ("names", "parent")
 
@@ -120,6 +128,10 @@ class _SrcInterp:
             callee = self.eval(node.func, env)
             args = [self.eval(a, env) for a in node.args]
             return self.apply(callee, args, node.loc)
+        if isinstance(node, ast.Partial):
+            callee = self.eval(node.func, env)
+            args = [self.eval(a, env) for a in node.args]
+            return self.make_partial(callee, args, node.loc)
         if isinstance(node, ast.If0):
             c = self._as_int(self.eval(node.cond, env), node.loc)
             return self.eval(node.then_e if c == 0 else node.else_e, env)
