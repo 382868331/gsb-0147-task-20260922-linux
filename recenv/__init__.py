@@ -27,7 +27,9 @@ from .ast_nodes import (
 )
 from .convert import MAIN_ID, convert
 from .source_interp import evaluate as eval_source
+from .source_interp import evaluate_with_stats as eval_source_with_stats
 from .target_interp import run_program as eval_target
+from .target_interp import run_program_with_stats as eval_target_with_stats
 
 MAX_NODES = 500
 DEFAULT_STEP_LIMIT = 10_000
@@ -38,6 +40,8 @@ __all__ = [
     "convert",
     "eval_source",
     "eval_target",
+    "eval_source_with_stats",
+    "eval_target_with_stats",
     "MAIN_ID",
     "MAX_NODES",
     "DEFAULT_STEP_LIMIT",

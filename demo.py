@@ -17,7 +17,14 @@
 from __future__ import annotations
 
 from recenv import ast_nodes as ast
-from recenv import convert, errors, eval_source, eval_target
+from recenv import (
+    convert,
+    errors,
+    eval_source,
+    eval_source_with_stats,
+    eval_target,
+    eval_target_with_stats,
+)
 
 
 def line(title: str) -> None:
@@ -122,6 +129,49 @@ def demo_mutual() -> None:
     print("对照结果：两者一致，且 even(9)=0 符合预期 ✔")
 
 
+def build_tail_countdown(n: int) -> ast.Expr:
+    # letrec loop(n, acc) = if0 n then acc else loop(n + -1, acc + 1)
+    # in loop(n, 0)   —— 完全尾递归
+    loop = ast.Lambda(
+        ["n", "acc"],
+        ast.If0(
+            ast.Var("n"),
+            ast.Var("acc"),
+            ast.Call(
+                ast.Var("loop"),
+                [
+                    ast.Add(ast.Var("n"), ast.Int(-1)),
+                    ast.Add(ast.Var("acc"), ast.Int(1)),
+                ],
+            ),
+        ),
+    )
+    return ast.LetRec(
+        [ast.RecBinding("loop", loop)],
+        ast.Call(ast.Var("loop"), [ast.Int(n), ast.Int(0)]),
+    )
+
+
+def demo_tail_call_reuse() -> None:
+    line("正常结果 C：深层尾递归 —— 目标解释器复用调用现场，保留层数为常数")
+    n = 8000
+    root = build_tail_countdown(n)
+    program = convert(root)
+    s_value, s_events, s_stats = eval_source_with_stats(root, step_limit=200_000)
+    t_value, t_events, t_stats = eval_target_with_stats(program, step_limit=200_000)
+
+    print(f"程序：letrec loop(n, acc) = if0 n then acc else loop(n-1, acc+1)，"
+          f"loop({n}, 0)")
+    print(f"源解释器（对照，无复用）: 返回值={s_value}  "
+          f"实际保留的最大调用层数={s_stats.max_call_depth}")
+    print(f"目标解释器（尾调用复用）: 返回值={t_value}  "
+          f"实际保留的最大调用层数={t_stats.max_call_depth}")
+    assert (s_value, s_events) == (t_value, t_events)
+    assert t_stats.max_call_depth <= 2 < s_stats.max_call_depth
+    print("对照结果：返回值与副作用序列一致；目标侧保留层数为常数，")
+    print("减少的是运行占用（实际调用层数），而非调高递归上限 ✔")
+
+
 def demo_unbound_boundary() -> None:
     line("异常边界 1：未绑定变量 —— convert 必须拒绝且错误可定位")
     bad = ast.Let(
@@ -159,6 +209,7 @@ def main() -> None:
     print(f"Python {__import__('sys').version.split()[0]}，仅标准库，离线运行")
     demo_counter()
     demo_mutual()
+    demo_tail_call_reuse()
     demo_unbound_boundary()
     demo_node_limit_boundary()
     line("演示结束")

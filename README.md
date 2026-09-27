@@ -47,6 +47,8 @@ from recenv import (
     convert,          # convert(Expr) -> Program
     eval_source,      # (Expr, step_limit=10000) -> (int, events)
     eval_target,      # (Program, step_limit=10000) -> (int, events)
+    eval_source_with_stats,  # 同上，额外返回 RunStats(steps, max_call_depth)
+    eval_target_with_stats,  # 同上，额外返回 RunStats(steps, max_call_depth)
     MAX_NODES,                 # 500
     DEFAULT_STEP_LIMIT,        # 10000
     errors,           # ASTError / UnboundVariableError / ScopeError /
@@ -88,6 +90,26 @@ from recenv import (
    （函数槽不可重新赋值）。
 5. **显式簿记**：`TWithFrame`（追加帧）、`TBegin`（填充后执行组体）、
    `TMkCell` / `TFillCell` 只表达布局，不计入执行步数。
+
+## 尾部调用复用（目标解释器）
+
+目标 IR 解释器对**尾位置调用**（函数体、`TIf0` 分支、`TBegin` 末式、
+`TWithFrame` 体的尾位置上的 `TCall`）做调用现场复用：函数与实参仍
+严格从左到右在旧现场上求值，求值一结束旧激活记录即被丢弃，新激活在
+**同一调用层**上就地开始（蹦床循环），不再压层。
+
+- **保留层数可观测**：`eval_target_with_stats` 返回的
+  `RunStats.max_call_depth` 是执行期间实际同时保留的最大函数调用
+  层数。深层尾递归（如 8000 次 countdown）目标侧该值为常数（1），
+  而对照源解释器（`eval_source_with_stats`，不做复用）为 8001 ——
+  减少的是运行占用，不是调高了递归上限。
+- **捕获数据不释放**：闭包捕获记录由 `Closure` 对象自身持有，现场
+  复用只丢弃不再被引用的激活记录；仍被捕获的共享 cell 继续可用
+  （`tests/test_tailcalls.py` 中逐事件断言）。
+- **非尾调用不变**：非尾位置调用仍按原方式压层，保留层数随深度
+  线性增长；源程序与转换后程序的返回值及副作用事件序列逐项一致。
+- 无限尾递归死循环现在如期触发 `StepLimitError`（步数预算），
+  而不是 Python 递归深度错误。
 
 ## 输入上限与错误语义
 

@@ -26,6 +26,20 @@ sys.setrecursionlimit(max(100_000, sys.getrecursionlimit()))
 DEFAULT_STEP_LIMIT = 10_000
 
 
+@dataclass(frozen=True)
+class RunStats:
+    """源解释器一次求值的运行占用统计（对照用）。
+
+    Attributes:
+        steps: 实际执行的计步数
+        max_call_depth: 同时保留的最大函数调用层数；源解释器不做尾调用
+            复用，深层尾递归时该值随递归深度线性增长，用作对照证据
+    """
+
+    steps: int
+    max_call_depth: int
+
+
 class Box:
     __slots__ = ("value", "filled")
 
@@ -81,11 +95,31 @@ def evaluate(
     return value, interp.events
 
 
+def evaluate_with_stats(
+    root: ast.Expr, step_limit: int = DEFAULT_STEP_LIMIT
+) -> tuple[int, list[tuple[str, str, int]], RunStats]:
+    """与 :func:`evaluate` 相同，但额外返回运行占用统计（含调用层数）。"""
+    interp = _SrcInterp(step_limit)
+    try:
+        value = interp.eval(root, None)
+    except StepLimitError as e:
+        e.events = list(interp.events)
+        raise
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise LangRuntimeError(f"program result must be an integer, got {type(value).__name__}")
+    return value, interp.events, interp.stats()
+
+
 class _SrcInterp:
     def __init__(self, step_limit: int) -> None:
         self.steps = 0
         self.limit = step_limit
         self.events: list[tuple[str, str, int]] = []
+        self.call_depth = 0
+        self.max_call_depth = 0
+
+    def stats(self) -> RunStats:
+        return RunStats(steps=self.steps, max_call_depth=self.max_call_depth)
 
     def tick(self) -> None:
         self.steps += 1
@@ -166,7 +200,13 @@ class _SrcInterp:
         call_scope = Scope(callee.env)
         for name, a in zip(callee.params, args):
             call_scope.declare(name, Box(self._as_int_or_fn(a, loc)))
-        return self.eval(callee.body, call_scope)
+        self.call_depth += 1
+        if self.call_depth > self.max_call_depth:
+            self.max_call_depth = self.call_depth
+        try:
+            return self.eval(callee.body, call_scope)
+        finally:
+            self.call_depth -= 1
 
     @staticmethod
     def _as_int(v: object, loc: str | None) -> int:
