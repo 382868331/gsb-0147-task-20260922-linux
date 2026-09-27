@@ -5,7 +5,8 @@
     python demo.py
 
 内容：
-1. 正常结果：共享 cell 的计数器闭包 + letrec 互递归 even/odd；
+1. 正常结果：共享 cell 的计数器闭包 + letrec 互递归 even/odd
+   + 20 万次尾递归只保留 1 层调用现场（FrameStats 实测）；
    独立源解释器给出返回值与副作用序列，convert 后打印函数表与显式环境
    布局，目标解释器真实执行并逐项对照。
 2. 异常边界：真实构造一个含未绑定变量的程序，convert 必须拒绝并给出
@@ -17,7 +18,7 @@
 from __future__ import annotations
 
 from recenv import ast_nodes as ast
-from recenv import convert, errors, eval_source, eval_target
+from recenv import convert, errors, eval_source, eval_target, eval_target_tracked
 
 
 def line(title: str) -> None:
@@ -154,11 +155,46 @@ def demo_node_limit_boundary() -> None:
         raise AssertionError("超规模程序未被拒绝")
 
 
+def build_countdown(n: int) -> ast.Expr:
+    # letrec loop(n) = if0 n then 0 else loop(n - 1)
+    body = ast.If0(
+        ast.Var("n"),
+        ast.Int(0),
+        ast.Call(ast.Var("loop"), [ast.Add(ast.Var("n"), ast.Int(-1))]),
+    )
+    return ast.LetRec(
+        [ast.RecBinding("loop", ast.Lambda(["n"], body))],
+        ast.Call(ast.Var("loop"), [ast.Int(n)]),
+    )
+
+
+def demo_tail_call_reuse() -> None:
+    line("正常结果 C：尾调用复用调用现场（实际保留的调用层数）")
+    n = 200_000
+    root = build_countdown(n)
+    program = convert(root)
+    value, _events, stats = eval_target_tracked(program, step_limit=10_000_000)
+    # 小规模同源解释器对照返回值（源解释器保持朴素递归，只跑小 n）
+    small_value, _ = eval_source(build_countdown(200))
+    print(f"程序：letrec loop(n) = if0 n then 0 else loop(n-1)；调用 loop({n})")
+    print(f"返回值：{value}（源解释器小样本 loop(200) = {small_value}，一致）")
+    print("目标解释器实际记录的调用层占用：")
+    print(f"  总调用次数 calls          = {stats.calls}")
+    print(f"  复用现场的尾调用 tail_reuses = {stats.tail_reuses}")
+    print(f"  峰值存活激活帧 peak_depth  = {stats.peak_depth}")
+    print(f"  结束时存活激活帧 depth     = {stats.depth}")
+    assert value == 0 and small_value == 0
+    assert stats.peak_depth == 1, stats.peak_depth
+    assert stats.tail_reuses == n
+    print("结论：20 万次连续尾调用始终只占 1 层调用现场（不是调高递归上限）。")
+
+
 def main() -> None:
     print("recenv 演示：递归闭包的环境布局转换")
     print(f"Python {__import__('sys').version.split()[0]}，仅标准库，离线运行")
     demo_counter()
     demo_mutual()
+    demo_tail_call_reuse()
     demo_unbound_boundary()
     demo_node_limit_boundary()
     line("演示结束")

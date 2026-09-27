@@ -29,7 +29,7 @@ recenv/
   resolver.py      静态解析：绑定 ID、词法遮蔽、可变性分析、自由变量收集
   convert.py       核心：convert(AST) -> Program（闭包转换 + 显式环境布局）
   source_interp.py 独立源解释器（参考实现；不导入 convert）
-  target_interp.py 目标 IR 解释器（执行 convert 的输出）
+  target_interp.py 目标 IR 解释器（执行 convert 的输出，尾调用复用现场）
 tests/
   proggen.py             确定性程序生成器（固定随机种子）
   test_ast_validation.py 输入校验与可定位错误
@@ -47,6 +47,8 @@ from recenv import (
     convert,          # convert(Expr) -> Program
     eval_source,      # (Expr, step_limit=10000) -> (int, events)
     eval_target,      # (Program, step_limit=10000) -> (int, events)
+    eval_target_tracked,  # -> (int, events, FrameStats)；含尾调用层数统计
+    FrameStats,       # depth / peak_depth / tail_reuses / calls
     MAX_NODES,                 # 500
     DEFAULT_STEP_LIMIT,        # 10000
     errors,           # ASTError / UnboundVariableError / ScopeError /
@@ -88,6 +90,33 @@ from recenv import (
    （函数槽不可重新赋值）。
 5. **显式簿记**：`TWithFrame`（追加帧）、`TBegin`（填充后执行组体）、
    `TMkCell` / `TFillCell` 只表达布局，不计入执行步数。
+
+## 尾调用消除（复用调用现场）
+
+转换器为每个 IR 调用节点标注尾位置：`TCall.tail` 为真当且仅当该调用的
+返回值直接成为所在函数的返回值（尾位置沿 `if0` 被选中分支、`let`/letrec
+帧的 body、`TBegin` 最后一个表达式传播；函数实参、加法操作数、赋值的值
+都不是尾位置）。主表达式从非尾上下文开始，因此顶层第一次调用仍正常建立
+第一层。
+
+目标解释器对尾调用采用 trampoline：函数与实参仍在调用者环境严格从左到右
+求值；一旦进入尾调用，当前激活帧之后不会再被使用——被新闭包引用的活数据
+在闭包构造时就已按值（`val:`）或按 `Cell` 身份（`cell:`/`cell-rec:`）复制进
+被调用者的捕获记录，随新帧存活——于是直接用被调用者的函数体与激活帧替换
+当前现场，不压入新的调用层。普通调用保持原有嵌套求值，Python 调用栈与
+嵌套深度不变；源解释器不做该转换，继续作为独立语义对照。
+
+实际保留的调用层数由 `target_interp.FrameStats` 如实记录（每次运行新建）：
+
+- `depth` / `peak_depth`：当前 / 峰值**存活函数激活帧数**（主表达式不计）；
+- `tail_reuses`：复用前一调用现场的尾调用次数；
+- `calls`：调用总数（普通调用 + 尾调用）。
+
+通过 `eval_target_tracked(program, step_limit)`（返回
+`(value, events, FrameStats)`）读取；`eval_target` 接口签名不变。深尾递归
+（如 demo 中 20 万次 `loop(n-1)`）的 `peak_depth` 恒为 1，证明减少的是运行
+占用而非调高递归上限；被 `Add` 包裹的非尾递归 `peak_depth` 仍随嵌套增长，
+且返回值与副作用序列与源解释器逐项一致（见 `tests/test_tail_calls.py`）。
 
 ## 输入上限与错误语义
 
@@ -137,8 +166,11 @@ from recenv import (
   同时绑定 letrec。**不**宣称与任何行业标准语言/字节码/ABI 兼容；
   没有乘法、字符串、数据结构、异常值、I/O 原语。
 - 解释器为直接的递归下降求值器（非寄存器机/栈机），`sys.setrecursionlimit`
-  已留出余量以保证 10000 步预算先于 Python 递归深度报错；这不是
-  生产级代码生成器，目标是 IR 布局的正确性与可观察对照。
+  已留出余量以保证 10000 步预算先于 Python 递归深度报错；**目标解释器的
+  尾调用例外**——尾位置调用走 trampoline 复用激活帧（见上节），连续尾
+  递归不占额外 Python 栈层，普通调用仍是递归下降；源解释器刻意保持朴素
+  递归以独立对照语义。这不是生产级代码生成器，目标是 IR 布局的正确性与
+  可观察对照。
 - letrec 只允许 lambda 绑定（递归函数组语义）；非函数的递归绑定不在
   契约内。
 - 短演示不穷举上限规模；500/10000 的边界由单元测试精确覆盖

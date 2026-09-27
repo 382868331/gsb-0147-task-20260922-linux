@@ -75,7 +75,14 @@ class _Converter:
 
     # -- 表达式转换 --------------------------------------------------------
 
-    def conv(self, node: ast.Expr, frame: _Frame | None) -> ast.TExpr:
+    def conv(
+        self, node: ast.Expr, frame: _Frame | None, tail: bool = False
+    ) -> ast.TExpr:
+        """把源表达式转换为 IR。
+
+        tail=True 表示该表达式处于函数体（或主表达式）的尾位置：
+        其返回值直接成为外层结果、外层调用现场之后不再执行任何动作。
+        """
         if isinstance(node, ast.Int):
             return ast.TConst(node.value)
         if isinstance(node, ast.Var):
@@ -84,41 +91,51 @@ class _Converter:
         if isinstance(node, ast.Add):
             return ast.TPrim(
                 "add",
+                # 加法还要对结果归约，实参调用不是尾位置
                 (self.conv(node.lhs, frame), self.conv(node.rhs, frame)),
             )
         if isinstance(node, ast.Call):
             return ast.TCall(
                 self.conv(node.func, frame),
                 tuple(self.conv(a, frame) for a in node.args),
+                # 尾位置调用：返回值直接外抛，本帧之后不再被需要
+                tail=tail,
             )
         if isinstance(node, ast.If0):
             return ast.TIf0(
                 self.conv(node.cond, frame),
-                self.conv(node.then_e, frame),
-                self.conv(node.else_e, frame),
+                # 两分支与整个 if0 处于同一尾位置（条件本身不是）
+                self.conv(node.then_e, frame, tail),
+                self.conv(node.else_e, frame, tail),
             )
         if isinstance(node, ast.Set):
             bid = self.resolved.targets[id(node)]
             b = self._binding(bid)
             depth, slot = self._locate_ref(frame, bid)
             return ast.TCellSet(
+                # 赋值还要写 cell 并产生事件，其值表达式不是尾位置
                 depth, slot, self.conv(node.value, frame), b.name
             )
         if isinstance(node, ast.Let):
-            return self._conv_let(node, frame)
+            return self._conv_let(node, frame, tail)
         if isinstance(node, ast.Lambda):
+            # 闭包构造只产生函数值，从不处于尾调用链上
             return self._conv_lambda(node, frame)
         if isinstance(node, ast.LetRec):
-            return self._conv_letrec(node, frame)
+            return self._conv_letrec(node, frame, tail)
         raise ASTError(f"cannot convert node of type {type(node).__name__}")
 
-    def _conv_let(self, node: ast.Let, frame: _Frame | None) -> ast.TExpr:
+    def _conv_let(
+        self, node: ast.Let, frame: _Frame | None, tail: bool
+    ) -> ast.TExpr:
         bid = self.resolved.let_bids[id(node)]
         b = self._binding(bid)
         tvalue = self.conv(node.value, frame)
         init: ast.TExpr = ast.TMkCell(tvalue) if b.mutable else tvalue
         inner = _Frame({bid: 0}, frame, 1)
-        tbody = self.conv(node.body, inner)
+        # let 的尾位置由其 body 继承；被闭包捕获的绑定随帧记录存活，
+        # 尾调用只丢弃调用者激活帧，不影响这条新追加的词法帧
+        tbody = self.conv(node.body, inner, tail)
         label = f"{'cell' if b.mutable else 'val'}:{b.name}#id{bid}"
         return ast.TWithFrame((init,), tbody, (label,))
 
@@ -151,8 +168,9 @@ class _Converter:
 
         # 激活帧：捕获槽 + 参数槽全部在 depth 0；更外层词法帧不再出现
         # （外部引用已全部扁平进捕获记录），故父帧为 None。
+        # 函数体是新的尾位置根：体内的尾调用可以复用本激活帧。
         act_frame = _Frame(cap_slots, None, len(labels))
-        tbody = self.conv(node.body, act_frame)
+        tbody = self.conv(node.body, act_frame, tail=True)
 
         # 闭包构造环境：从当前词法链原样抽取（Cell 槽抽出的仍是 Cell）
         env_inits = tuple(self._raw_read(frame, bid) for bid in info.free)
@@ -175,7 +193,7 @@ class _Converter:
         depth, slot = self._locate_ref(frame, bid)
         return ast.TGet(depth, slot)
 
-    def _conv_letrec(self, node: ast.LetRec, frame: _Frame | None) -> ast.TExpr:
+    def _conv_letrec(self, node: ast.LetRec, frame: _Frame | None, tail: bool) -> ast.TExpr:
         members = self.resolved.rec_groups[id(node)]
         # 组帧：每槽一个未填充 Cell（声明顺序 = 绑定 ID 顺序）
         group_slots = {bid: i for i, (_, bid) in enumerate(members)}
@@ -194,11 +212,14 @@ class _Converter:
                 enumerate(closures), members
             )
         )
-        tbody = self.conv(node.body, group_frame)
+        # 组体继承外层尾位置；填充表达式只是布局簿记，不是源语言尾调用
+        tbody = self.conv(node.body, group_frame, tail)
         return ast.TWithFrame(inits, ast.TBegin(fills + (tbody,)), labels)
 
     def run(self) -> ast.Program:
-        tmain = self.conv(self.root, None)
+        # 主表达式从非尾上下文开始：主层不是函数激活帧，顶层 Call 仍需
+        # 正常建立第 1 层；尾位置（tail=True）只在函数体内部成立。
+        tmain = self.conv(self.root, None, tail=False)
         self.layout[MAIN_ID] = [
             "<empty environment chain; let/letrec append frames via TWithFrame>"
         ]

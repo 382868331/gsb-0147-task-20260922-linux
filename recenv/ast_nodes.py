@@ -310,6 +310,9 @@ class TFillCell:
 class TCall:
     func: "TExpr"
     args: tuple["TExpr", ...]
+    #: True 表示该调用处于函数体尾位置：被调用者返回后本激活帧不再需要，
+    #: 目标解释器可以复用本帧（尾调用消除）。普通调用恒为 False。
+    tail: bool = False
 
 
 @dataclass(frozen=True)

@@ -27,7 +27,11 @@ from .ast_nodes import (
 )
 from .convert import MAIN_ID, convert
 from .source_interp import evaluate as eval_source
-from .target_interp import run_program as eval_target
+from .target_interp import (
+    FrameStats,
+    run_program as eval_target,
+    run_program_tracked as eval_target_tracked,
+)
 
 MAX_NODES = 500
 DEFAULT_STEP_LIMIT = 10_000
@@ -38,6 +42,8 @@ __all__ = [
     "convert",
     "eval_source",
     "eval_target",
+    "eval_target_tracked",
+    "FrameStats",
     "MAIN_ID",
     "MAX_NODES",
     "DEFAULT_STEP_LIMIT",
